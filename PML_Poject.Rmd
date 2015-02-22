@@ -1,0 +1,187 @@
+---
+title: "Human Activity Recognition Prediction"
+output: html_document
+date: "Sunday, February 22, 2015"
+---
+
+***Executive Summary:***
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement. usually people  quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal is to build a predictive model for to quantify how well the activity has been done, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. to who we have asked to perform barbell lifts correctly and incorrectly in 5 different ways. .
+
+---
+
+***Setup required R library :***
+
+in first etwp we load the required R library for prediction and data manipulation 
+
+```{r,message=FALSE,warning=FALSE}
+library(data.table);library(corrplot)
+library(caret);library(randomForest)
+library(ggplot2);library(gridExtra)
+```
+
+---
+
+**Data Loading and Preperation:**
+
+we load the training and test files from the URL path
+
+```{r}
+setwd("D:/Data")
+PML_TRAIN_DATA <- read.csv(paste0(getwd(), "/pml-training.csv"),
+                  row.names = 1,na.strings= c("NA",""," ","#DIV/0!"))
+
+PML_SUBMISSION <- read.csv(paste0(getwd(), "/pml-testing.csv"),
+                 row.names = 1,na.strings= c("NA",""," ","#DIV/0!"))
+
+summary(PML_TRAIN_DATA$classe);prop.table(table(PML_TRAIN_DATA$classe))
+```
+
+in order to make the data files more suitable for prediction exercise, we perfrom the following data processing tasks
+
+***1: Remove window observation:***
+as per the data description given in the section 5.1 of the article:
+http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf
+the files include two type of observation: the individuel observations and sliding window aggregation that we need to remove from the training data set; the variable new_window allow us to distinguish between this two kind of observation
+
+```{r}
+PML_TRAIN_DATA <- PML_TRAIN_DATA[PML_TRAIN_DATA$new_window != "yes",]
+```
+
+***2: Clean out the Null Observation variables:*** 
+we identify the variables that contain only null observations and we remove them for the Training data set
+
+```{r}
+PML_TRAIN_NA <- which(apply(PML_TRAIN_DATA,2, function(x) all(is.na(x))))
+PML_TRAIN_DATA<-PML_TRAIN_DATA[,-c(PML_TRAIN_NA)]
+```
+
+***3: Remove irrelevent variables:*** 
+based on the variables name we find that some variable can be considered as identifiant and we can ignore from prediciton process
+```{r}
+head(names(PML_TRAIN_DATA))
+to_remove<-c("user_name","raw_timestamp_part_1","raw_timestamp_part_2"
+             ,"cvtd_timestamp","new_window","num_window")
+PML_TRAIN_DATA<-PML_TRAIN_DATA[,!(names(PML_TRAIN_DATA) %in% to_remove)]
+```
+
+***4: Remove zero variance variables:***
+using the function nearZeroVar we identify the variables that are close to zero variance, so irrelevant for prediction exercise. however after the 3 previous steps we observe that no variables meets this condition  
+```{r}
+noVar= nearZeroVar(PML_TRAIN_DATA,saveMetrics = TRUE)
+head (noVar);summary(noVar$nzv)
+```
+the distribution of target variables on the new training data set is as following:
+```{r}
+summary(PML_TRAIN_DATA$classe);prop.table(table(PML_TRAIN_DATA$classe))
+```
+
+---
+
+**Exploratory Data Analysis:**
+
+initialy, a correlation analysis give us a highlight overview about the most correlated predictors
+
+```{r}
+PML_TRAIN_DATA_Num<-sapply(PML_TRAIN_DATA, is.numeric)
+cc <- cor(PML_TRAIN_DATA[,PML_TRAIN_DATA_Num], use="pairwise", 
+          method="pearson")
+ord <- order(cc[1,]);cor <- cc[ord, ord]
+corrplot(cor,method =  "square",type="lower",tl.cex = 0.5,tl.col = "red",
+          tl.offset = 0.4, tl.srt = 35,rect.lwd=2)
+title(main="Correlation PML_TRAIN_DATA using Pearson",cex.main=0.9)
+```
+
+we observe that variables yaw belt and roll_belt are one of the most correlated with other predictors, we perform a density distribution on this two variables to analyse the difference by classe
+
+```{r,fig.width=6,fig.height=4}
+g1<-qplot(yaw_belt,colour=classe,data=PML_TRAIN_DATA,geom="density")
+g2<-qplot(roll_belt,colour=classe,data=PML_TRAIN_DATA,geom="density")
+grid.arrange(g1,g2,ncol=2)
+```
+
+---
+
+***Prediction Models Exercise:***
+
+***Training and test partition sets:***
+in this phase we build the prediction models, initially we create two data partition (training and test) with ratio 60% training and 40% test out of training files 
+
+```{r}
+set.seed(12345)
+INTRAIN <- createDataPartition(PML_TRAIN_DATA$classe, p = .6, list = FALSE)
+PMLTRAIN <- PML_TRAIN_DATA[INTRAIN,];PMLTEST <- PML_TRAIN_DATA[-INTRAIN,]
+```
+
+***Models development using Caret Package:***
+
+the Caret Package allow us to develop predicitons models using several technics; we will test in the following setps :
+
+- Stochastic Gradient Boosting Model (GBM)
+
+- Support Vector Machine (SVM)
+
+- Regularized Discriminant Analysis (RDA)
+
+***1.Cross Validation Seetings:***
+we setup the cross validation parameters using the trainControl option
+
+```{r}
+fitControl <- trainControl(method = "repeatedcv", number = 5,repeats = 5,
+                           classProbs = TRUE)
+set.seed(54321)
+```
+***2.Caret Models development:***
+than we execute the training function for each model
+```{r}
+HAR_GBM <- train(classe ~ .,data=PMLTRAIN,method = "gbm",
+                trControl = fitControl, verbose = FALSE)
+HAR_SVM <- train(classe ~ .,data=PMLTRAIN, method = "svmRadial",
+                trControl = fitControl)
+HAR_RDA <- train(classe ~ .,data=PMLTRAIN,method = "rda", 
+                 trControl = fitControl)
+```
+
+***3.Random Forsts Model development:***
+we develop the RF models using randomForest library since the application of RF on Caret library require a long execution time
+
+```{r}
+HAR_RF<-randomForest(classe~.,data=PMLTRAIN,ntree=100, importance=TRUE,proximity=TRUE)
+```
+
+the variables importance graph on Random forest allow us to analyse the predictors impact on the model
+
+```{r}
+varImpPlot(HAR_RF,n.var=20,cex=0.8,col = "blue")
+```
+
+***4.Models performance comparaison:***
+in order to compare models performance , we run each model on the test parition and we analyse the different confusion matrix and performance indicators like accuracy, specificty, sensibility..etc
+```{r,eval=FALSE}
+n <- ncol(PMLTEST)
+HAR_GBMTESTPRED <- predict (HAR_GBM, PMLTEST[,-n])
+HAR_SVMTESTPRED <- predict (HAR_SVM, PMLTEST[,-n])
+HAR_RDATESTPRED <- predict (HAR_RDA, PMLTEST[,-n])
+HAR_RFTESTPRED <- predict (HAR_RF, PMLTEST[,-n])
+```
+
+confusion matrix are detailled as following:
+
+```{r}
+confusionMatrix(data = HAR_GBMTESTPRED, PMLTEST[,n])
+confusionMatrix(data = HAR_SVMTESTPRED, PMLTEST[,n])
+confusionMatrix(data = HAR_RDATESTPRED, PMLTEST[,n])
+confusionMatrix(data = HAR_RFTESTPRED, PMLTEST[,n])
+```
+
+based on the comparaison of previous confusion matrix we observe that the Random forest model overperform in this case, we consider this model as the final one for deployment.
+
+***Random Forests Model deployment:***
+
+we run the model deployment using the command
+
+```{r}
+answers <- predict(HAR_RF, PML_SUBMISSION)
+```
+
+
